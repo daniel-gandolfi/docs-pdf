@@ -13,6 +13,6 @@
   "dependencies": {
     "dotenv": "^16.0.1",
     "pdfjs": "^2.4.7",
-    "puppeteer": "^14.3.0"
+    "puppeteer": "^18.0.0"
   }
 }

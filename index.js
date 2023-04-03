@@ -20,7 +20,7 @@ const {
   PDF_PATH,
   DOCS_URL,
   NEXT_PAGE_SELECTOR,
-  HAS_LAZY_LOADING
+  EXTRA_LOAD_WAIT_TIME
 } = process.env
 
 
@@ -74,6 +74,13 @@ async function createPDF(page) {
 
   const selector = NEXT_PAGE_SELECTOR
 
+
+  //This is used to wait page load a bit. It's better than always waiting <x> time
+  await page.waitForSelector(selector, {
+    timeout: Math.max(EXTRA_LOAD_WAIT_TIME, 1)
+  }).catch(() => "")
+
+
   const nextLink = await page.evaluate((selector) => {
     const element = document.querySelector(selector)
     if (element) {
@@ -88,7 +95,6 @@ async function createPDF(page) {
 
   if (nextLink) {
     console.log(`Navigating to ${nextLink}...`)
-
     await page.goto(nextLink, {
       waitUntil: 'networkidle0'
     })
@@ -109,29 +115,27 @@ async function createPDF(page) {
     })
     console.log(`${nextLink} done!`)
     count++;
-    fs.promises.writeFile(resumeFile, JSON.stringify({
+    await fs.promises.writeFile(resumeFile, JSON.stringify({
       page: nextLink,
       count
     }), {
-    encoding: "UTF-8"
-  })
-    // If page has lazy loaded images, wait for them to load
-    if (HAS_LAZY_LOADING) {
-      const WAIT_FOR = 3000
-      await page.waitForTimeout(WAIT_FOR)
-    }
-
+      encoding: "UTF-8"
+    })
     await createPDF(page)
   } else {
     console.log('Saving pdf...')
     await joinGeneratedNumberedPdfFilesInFolder(PDF_PATH, paths.tmpOutputFiles);
     console.debug("cleanup");
+    try {
+      await fs.promises.rm(resumeFile)
+    } catch (err) {
+      console.error("did not find memory file, pretty odd", err)
+    }
     await (Promise.all([
       browser.close(),
       fs.promises.rmdir(paths.tmpOutputFiles, {
         recursive: true
       }),
-      fs.promises.rm(resumeFile)
     ])) 
     console.log("Your pdf is ready at ", PDF_PATH)
   }
