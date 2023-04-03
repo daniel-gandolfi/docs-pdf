@@ -1,112 +1,76 @@
 import 'dotenv/config'
 import pdfjs from 'pdfjs'
 import puppeteer from 'puppeteer'
-import _fs from 'fs'
-const fs = _fs.promises
+import path from "path"
+import fs from 'fs'
+import {joinGeneratedNumberedPdfFilesInFolder} from "./joinTmpPdfList.js"
+import paths from "./paths.js" 
 
 // Create PDF doc
-const doc = new pdfjs.Document()
 
+const doc = new pdfjs.Document()
 // Go to page
 const browser = await puppeteer.launch({ headless: true })
 const page = await browser.newPage()
 await page.emulateMediaType('print')
 
 const {
-  NAME,
-  STUDENT_NUMBER,
-  STUDY,
-  SCHOOL,
-  PROJECT_TITLE,
+  HEADER_PATH,
+  FOOTER_PATH,
   PDF_PATH,
   DOCS_URL,
   NEXT_PAGE_SELECTOR,
   HAS_LAZY_LOADING
 } = process.env
 
+
+const headerContent = HEADER_PATH && fs.existsSync(path.resolve(HEADER_PATH)) ? 
+  fs.promises.readFile(HEADER_PATH, {
+    encoding: "UTF-8"
+  })
+  : undefined
+const footerContent = FOOTER_PATH && fs.existsSync(path.resolve(FOOTER_PATH)) ? 
+  fs.promises.readFile(FOOTER_PATH, {
+    encoding: "UTF-8"
+  })
+  : undefined
+
+
+if (!fs.existsSync(paths.tmpOutputFiles)){
+  fs.mkdir(paths.tmpOutputFiles, (err) => {
+    if (err)  {
+      console.error(err) 
+      process.exit(1)
+    }
+  })
+}
+
+const resumeFile = path.resolve("./memory")
+const initialData = fs.existsSync(resumeFile) ? JSON.parse(fs.readFileSync(resumeFile,{
+    encoding: "UTF-8"
+  } )) : {
+  page: DOCS_URL,
+  count: 0
+}
+let count = initialData.count;
+const firstPageUrl = initialData.page
+
 // Go to page
-await page.goto(DOCS_URL)
-
-const headerTemplate = async (page) => `
-<style>
-  header.header {
-    font-size: 8px;
-    font-family: 'Inter', sans-serif;
-    width: 100%;
-    height: 8em;
-    color: #27272a;
-    position: relative;
-    left: 0;
-    right: 0;
-    top: 0;
-    margin: 2em auto 0 auto;
-    padding: 0 1.7cm;
-    text-align: left;
-  }
-</style>
-
-<header class="header">
-  <span class="title" />
-</header>
-`
-
-const footerTemplate = async (page) => `
-<style>
-  footer {
-    font-size: 8px;
-    font-family: 'Inter', sans-serif;
-    width: 100%;
-    height: 8em;
-    color: #27272a;
-    display: grid;
-    grid-auto-flow: column;
-    grid-template-columns: 1fr 1fr 1fr 1fr 1fr;
-    column-gap: 32px;
-    align-items: end;
-    margin: 0 auto;
-    padding: 0 1.7cm;
-    width: 100%;
-  }
-
-  .spacer {
-    width: 64px;
-  }
-
-  .col-span-2 {
-    grid-column: span 2 / span 2;
-  }
-</style>
-
-<footer>
-<span>${PROJECT_TITLE}</span>
-<span>
-${NAME} <br />${STUDENT_NUMBER}
-</span>
-<span class="col-span-2">
-${STUDY} <br />
-${SCHOOL}
-</span>
-<span style="text-align: right;">
-<span class="pageNumber" /> of <span class="totalPages" />
-</span>
-</footer>
-`
+await page.goto(firstPageUrl)
 
 // Create PDF of page
 async function createPDF(page) {
   await page.waitForNetworkIdle()
-  const src = await page.pdf({
-    path: PDF_PATH,
-    displayHeaderFooter: true,
-    headerTemplate: await headerTemplate(page),
-    footerTemplate: await footerTemplate(page),
+  const srcpromise = page.pdf({
+    path: path.resolve(paths.tmpOutputFiles, count + '.pdf'),
+    displayHeaderFooter: headerContent || footerContent,
+    headerTemplate: headerContent ? await headerContent(): undefined,
+    footerTemplate: footerContent ? await footerContent(): undefined,
     printBackground: true,
     format: 'A4',
     margin: { top: '1.9cm', bottom: '3.67cm', left: '1.9cm', right: '1.9cm' }
   })
 
-  const pdf = new pdfjs.ExternalDocument(src)
-  doc.addPagesOf(pdf)
 
   const selector = NEXT_PAGE_SELECTOR
 
@@ -118,6 +82,9 @@ async function createPDF(page) {
       return ''
     }
   }, selector)
+
+  const pdf = new pdfjs.ExternalDocument(await srcpromise)
+  doc.addPagesOf(pdf)
 
   if (nextLink) {
     console.log(`Navigating to ${nextLink}...`)
@@ -141,7 +108,13 @@ async function createPDF(page) {
       scroll()
     })
     console.log(`${nextLink} done!`)
-
+    count++;
+    fs.promises.writeFile(resumeFile, JSON.stringify({
+      page: nextLink,
+      count
+    }), {
+    encoding: "UTF-8"
+  })
     // If page has lazy loaded images, wait for them to load
     if (HAS_LAZY_LOADING) {
       const WAIT_FOR = 3000
@@ -151,11 +124,16 @@ async function createPDF(page) {
     await createPDF(page)
   } else {
     console.log('Saving pdf...')
-    const src = await fs.readFile(PDF_PATH)
-    const ext = new pdfjs.ExternalDocument(src)
-    doc.pipe(_fs.createWriteStream(PDF_PATH))
-    await doc.end()
-    await browser.close()
+    await joinGeneratedNumberedPdfFilesInFolder(PDF_PATH, paths.tmpOutputFiles);
+    console.debug("cleanup");
+    await (Promise.all([
+      browser.close(),
+      fs.promises.rmdir(paths.tmpOutputFiles, {
+        recursive: true
+      }),
+      fs.promises.rm(resumeFile)
+    ])) 
+    console.log("Your pdf is ready at ", PDF_PATH)
   }
 }
 
